@@ -1,121 +1,119 @@
 import os
-import time
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
-)
+import zipfile
+import shutil
+import asyncio
+import mimetypes
 import subprocess
+from pathlib import Path
+from datetime import datetime
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-# Logging
-logging.basicConfig(level=logging.INFO)
-TOKEN = os.environ.get("BOT_TOKEN", "PASTE_YOUR_BOT_TOKEN_HERE")
-BOT_USERNAME = "@FileCompressorBot"
+OWNER_ID = 123456789  # Replace with your Telegram ID
+BOT_USERNAME = "YourBotUsername"
+CHANNEL_USERNAME = "YourChannel"
 
-# Start command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome! Send an MP3/MP4 or ZIP/Folder to compress. Choose options after upload.")
+START_TEXT = "Send a ZIP or folder containing MP3 or MP4 files."
+START_IMG_PATH = "start.jpg"
 
-# When media is received
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = update.message.document or update.message.audio or update.message.video
-    if not file:
-        await update.message.reply_text("Please send an MP3/MP4 file.")
+async def set_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
         return
+    new_msg = " ".join(context.args)
+    global START_TEXT
+    START_TEXT = new_msg
+    await update.message.reply_text("Start message updated.")
 
-    file_path = f"downloads/{file.file_unique_id}_{file.file_name}"
-    os.makedirs("downloads", exist_ok=True)
-    await update.message.reply_text("Downloading file...")
+async def set_start_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+    photo = update.message.photo or []
+    if not photo:
+        return await update.message.reply_text("Send an image.")
+    await update.message.photo[-1].get_file().download_to_drive(START_IMG_PATH)
+    await update.message.reply_text("Start image updated.")
 
-    new_file = await context.bot.get_file(file.file_id)
-    await new_file.download_to_drive(file_path)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if os.path.exists(START_IMG_PATH):
+        await update.message.reply_photo(photo=START_IMG_PATH, caption=START_TEXT)
+    else:
+        await update.message.reply_text(START_TEXT)
 
-    context.user_data['original_file'] = file_path
-    context.user_data['file_type'] = file.mime_type
+async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file = update.message.document
+    if not file.file_name.endswith(".zip"):
+        return await update.message.reply_text("Only ZIP files are supported.")
 
-    keyboard = [
-        [InlineKeyboardButton("MP3 128kbps", callback_data="mp3_128"),
-         InlineKeyboardButton("MP3 64kbps", callback_data="mp3_64")],
-        [InlineKeyboardButton("MP4 360p", callback_data="mp4_360"),
-         InlineKeyboardButton("MP4 480p", callback_data="mp4_480")],
-        [InlineKeyboardButton("MP4 720p", callback_data="mp4_720"),
-         InlineKeyboardButton("MP4 1080p", callback_data="mp4_1080")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Choose compression quality:", reply_markup=reply_markup)
+    msg = await update.message.reply_text("Uploading and processing...")
+    download_path = f"downloads/{update.message.message_id}_{file.file_name}"
+    os.makedirs(download_path, exist_ok=True)
 
-# Compression + Upload
-async def compress_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    zip_file_path = f"{download_path}.zip"
+    await file.get_file().download_to_drive(zip_file_path)
+
+    try:
+        with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+            zip_ref.extractall(download_path)
+    except zipfile.BadZipFile:
+        return await msg.edit_text("Invalid ZIP file.")
+
+    files = list(Path(download_path).rglob("*"))
+    audio_files = [f for f in files if f.suffix.lower() in [".mp3"]]
+    video_files = [f for f in files if f.suffix.lower() in [".mp4"]]
+
+    if audio_files and not video_files:
+        kb = [[InlineKeyboardButton("64kbps", callback_data=f"compress_audio|64|{download_path}"),
+               InlineKeyboardButton("128kbps", callback_data=f"compress_audio|128|{download_path}")]]
+    elif video_files and not audio_files:
+        kb = [[InlineKeyboardButton("360p", callback_data=f"compress_video|360|{download_path}"),
+               InlineKeyboardButton("480p", callback_data=f"compress_video|480|{download_path}"),
+               InlineKeyboardButton("720p", callback_data=f"compress_video|720|{download_path}")]]
+    else:
+        return await msg.edit_text("ZIP must contain only MP3 or only MP4 files.")
+
+    await msg.edit_text("Choose compression quality:", reply_markup=InlineKeyboardMarkup(kb))
+
+async def compress_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    action, quality, path = query.data.split("|", 2)
+    msg = await query.edit_message_text("Compressing files...")
 
-    input_path = context.user_data.get("original_file")
-    mime = context.user_data.get("file_type", "")
-    quality = query.data
-    output_path = f"compressed/{os.path.basename(input_path)}"
-    os.makedirs("compressed", exist_ok=True)
+    out_dir = f"compressed/{Path(path).name}_{datetime.now().timestamp()}"
+    os.makedirs(out_dir, exist_ok=True)
 
-    await query.edit_message_text("Compressing...")
+    if action == "compress_audio":
+        for file in Path(path).rglob("*.mp3"):
+            out_path = f"{out_dir}/{file.stem}_{quality}kbps.mp3"
+            cmd = ["ffmpeg", "-i", str(file), "-b:a", f"{quality}k", out_path, "-y"]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    # FFmpeg command
-    if "mp3" in mime or quality.startswith("mp3"):
-        bitrate = "128k" if quality == "mp3_128" else "64k"
-        output_path = output_path.replace(".mp3", f"_{bitrate}.mp3")
-        cmd = ["ffmpeg", "-i", input_path, "-b:a", bitrate, "-y", output_path]
-    else:
+    elif action == "compress_video":
         scale = {
-            "mp4_360": "640:360",
-            "mp4_480": "854:480",
-            "mp4_720": "1280:720",
-            "mp4_1080": "1920:1080"
-        }.get(quality, "640:360")
-        output_path = output_path.replace(".mp4", f"_{scale.replace(':','x')}.mp4")
-        cmd = ["ffmpeg", "-i", input_path, "-vf", f"scale={scale}", "-preset", "ultrafast", "-y", output_path]
+            "360": "640:360",
+            "480": "854:480",
+            "720": "1280:720"
+        }[quality]
+        for file in Path(path).rglob("*.mp4"):
+            out_path = f"{out_dir}/{file.stem}_{quality}p.mp4"
+            cmd = ["ffmpeg", "-i", str(file), "-vf", f"scale={scale}", out_path, "-y"]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    zip_out = shutil.make_archive(out_dir, 'zip', out_dir)
+    await query.message.reply_document(document=InputFile(zip_out), caption=f"Compressed by @{BOT_USERNAME}")
+    shutil.rmtree(path)
+    shutil.rmtree(out_dir)
 
-    await query.edit_message_text("Uploading...")
+app = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()
 
-    start_time = time.time()
-    file_size = os.path.getsize(output_path)
-    mime_type = "audio/mpeg" if output_path.endswith(".mp3") else "video/mp4"
-
-    with open(output_path, "rb") as f:
-        input_file = InputFile(f, filename=os.path.basename(output_path), mime_type=mime_type)
-
-        if mime_type.startswith("audio"):
-            sent_msg = await context.bot.send_audio(
-                chat_id=query.message.chat_id,
-                audio=input_file,
-                caption="Compressed by " + BOT_USERNAME
-            )
-        else:
-            sent_msg = await context.bot.send_video(
-                chat_id=query.message.chat_id,
-                video=input_file,
-                caption="Compressed by " + BOT_USERNAME
-            )
-
-    end_time = time.time()
-    duration = end_time - start_time
-    speed = (file_size / 1024) / duration
-
-    await context.bot.send_message(
-        chat_id=query.message.chat_id,
-        text=f"Size: {file_size // 1024} KB\nUpload Speed: {speed:.2f} KB/s\nETA: {duration:.2f} sec"
-    )
-
-# Run the bot
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.ALL | filters.AUDIO | filters.VIDEO, handle_file))
-    app.add_handler(CallbackQueryHandler(compress_and_send))
-
-    print("Bot is running...")
-    app.run_polling()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("setstart", set_start))
+app.add_handler(CommandHandler("setstartimage", set_start_image))
+app.add_handler(MessageHandler(filters.Document.ZIP, handle_zip))
+app.add_handler(CallbackQueryHandler(compress_callback))
 
 if __name__ == "__main__":
-    main()
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    app.run_polling()
+
