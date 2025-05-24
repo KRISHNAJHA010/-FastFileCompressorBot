@@ -1,160 +1,241 @@
 import os
-import json
+import zipfile
 import shutil
-import mimetypes
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
+# Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BOT_OWNER_ID = int(os.getenv("BOT_OWNER_ID", "0"))
 
-CONFIG_FILE = "config.json"
+# Directories
 DOWNLOAD_DIR = "downloads"
-COMPRESSED_DIR = "compressed"
+COMPRESS_DIR = "compressed"
+START_TEXT_FILE = "start_text.txt"
+START_IMAGE_FILE = os.getenv("START_IMAGE", "start.jpg")
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-os.makedirs(COMPRESSED_DIR, exist_ok=True)
+os.makedirs(COMPRESS_DIR, exist_ok=True)
 
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        save_config({"channels": [], "via": "@YourBot", "start_message": "Welcome! Send me a file to compress.", "start_image_url": ""})
-    with open(CONFIG_FILE, "r") as f:
-        return json.load(f)
+# Helpers
+def clean_dirs():
+    shutil.rmtree(DOWNLOAD_DIR, ignore_errors=True)
+    shutil.rmtree(COMPRESS_DIR, ignore_errors=True)
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    os.makedirs(COMPRESS_DIR, exist_ok=True)
 
-def save_config(data):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def compress_audio(input_path, output_path, bitrate="128k"):
+    os.system(f"ffmpeg -i \"{input_path}\" -b:a {bitrate} -y \"{output_path}\"")
 
-def is_owner(user_id):
-    return user_id == BOT_OWNER_ID
+def compress_video(input_path, output_path, resolution="480"):
+    scale = {
+        "360": "640:360", "480": "854:480",
+        "720": "1280:720", "1080": "1920:1080"
+    }[resolution]
+    os.system(f"ffmpeg -i \"{input_path}\" -vf scale={scale} -preset veryfast -crf 28 -c:a aac -b:a 64k -y \"{output_path}\"")
 
+def load_start_text():
+    if os.path.exists(START_TEXT_FILE):
+        with open(START_TEXT_FILE, "r", encoding="utf-8") as f:
+            return f.read()
+    return "Welcome! Send an MP3/MP4 or ZIP/Folder to compress. Choose options after upload."
+
+def save_start_text(text):
+    with open(START_TEXT_FILE, "w", encoding="utf-8") as f:
+        f.write(text)
+
+# Command: /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cfg = load_config()
-    msg = cfg.get("start_message", "Welcome! Send me a file to compress.")
-    img = cfg.get("start_image_url", "")
-    if img:
-        await update.message.reply_photo(photo=img, caption=msg)
+    text = load_start_text()
+    if os.path.exists(START_IMAGE_FILE):
+        await update.message.reply_photo(photo=InputFile(START_IMAGE_FILE), caption=text)
     else:
-        await update.message.reply_text(msg)
+        await update.message.reply_text(text)
 
+# Command: /setstart
 async def set_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update.effective_user.id):
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /setstart Your welcome message here")
-        return
-    cfg = load_config()
-    cfg["start_message"] = " ".join(context.args)
-    save_config(cfg)
-    await update.message.reply_text("Start message updated.")
+    if context.args:
+        new_text = " ".join(context.args)
+        save_start_text(new_text)
+        await update.message.reply_text("Start message updated!")
+    else:
+        await update.message.reply_text("Usage: /setstart Your welcome message")
 
+# Command: /setstartimage
 async def set_start_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update.effective_user.id):
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /setstartimage image_url_or_empty")
-        return
-    cfg = load_config()
-    cfg["start_image_url"] = context.args[0]
-    save_config(cfg)
-    await update.message.reply_text("Start image updated.")
-
-async def set_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update.effective_user.id):
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /setchannels @ch1,@ch2")
-        return
-    channels = context.args[0].split(",")
-    cfg = load_config()
-    cfg["channels"] = channels
-    save_config(cfg)
-    await update.message.reply_text(f"Channels updated to: {', '.join(channels)}")
-
-async def set_via(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update.effective_user.id):
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /setvia @BotUsername")
-        return
-    via = context.args[0]
-    cfg = load_config()
-    cfg["via"] = via
-    save_config(cfg)
-    await update.message.reply_text(f"Via username updated to: {via}")
-
-async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user_id = update.effective_user.id
-    cfg = load_config()
-    not_joined = []
-    for channel in cfg.get("channels", []):
-        try:
-            member = await context.bot.get_chat_member(channel.strip(), user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
-                not_joined.append(channel.strip())
-        except:
-            not_joined.append(channel.strip())
-    if not_joined:
-        buttons = [[InlineKeyboardButton(f"Join {ch}", url=f"https://t.me/{ch.lstrip('@')}")]
-                   for ch in not_joined]
-        await update.message.reply_text("Please join all the required channels to continue:",
-                                        reply_markup=InlineKeyboardMarkup(buttons))
-        return False
-    return True
-
-async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_join(update, context):
-        return
-
-    message = update.message
-    media = message.audio or message.video or message.document
-    if not media:
-        await message.reply_text("Please send an audio, video, or document file.")
-        return
-
-    file = await media.get_file()
-    original_name = media.file_name or "input"
-    input_ext = os.path.splitext(original_name)[1] or mimetypes.guess_extension(media.mime_type or "") or ".bin"
-    base_name = os.path.splitext(original_name)[0]
-
-    input_path = os.path.join(DOWNLOAD_DIR, f"{base_name}{input_ext}")
-    output_path = os.path.join(COMPRESSED_DIR, f"{base_name}_compressed")
-
-    if "audio" in (media.mime_type or ""):
-        output_path += ".mp3"
+    if update.message.photo:
+        photo = update.message.photo[-1]
+        file = await photo.get_file()
+        await file.download_to_drive(START_IMAGE_FILE)
+        await update.message.reply_text("Start image updated!")
     else:
-        output_path += ".mp4"
+        await update.message.reply_text("Send this command with a photo to update the welcome image.")
 
-    await file.download_to_drive(custom_path=input_path)
+# Handle uploads
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clean_dirs()
+    doc = update.message.document or update.message.audio or update.message.video
+    if not doc:
+        await update.message.reply_text("Send an audio, video, or zip file.")
+        return
 
-    if "audio" in (media.mime_type or ""):
-        os.system(f"ffmpeg -i '{input_path}' -b:a 64k -metadata title='{base_name}' -y '{output_path}'")
+    file = await doc.get_file()
+    file_path = os.path.join(DOWNLOAD_DIR, doc.file_name)
+    await file.download_to_drive(file_path)
+
+    if file_path.endswith(".zip"):
+        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            zip_ref.extractall(DOWNLOAD_DIR)
+        os.remove(file_path)
+
+    context.user_data["input_files"] = []
+    for root, _, files in os.walk(DOWNLOAD_DIR):
+        for f in files:
+            path = os.path.join(root, f)
+            if f.lower().endswith((".mp3", ".mp4")):
+                context.user_data["input_files"].append(path)
+
+    options = [
+        [InlineKeyboardButton("MP3 128kbps", callback_data="audio_128k"),
+         InlineKeyboardButton("MP3 64kbps", callback_data="audio_64k")],
+        [InlineKeyboardButton("MP4 360p", callback_data="video_360"),
+         InlineKeyboardButton("MP4 480p", callback_data="video_480")],
+        [InlineKeyboardButton("MP4 720p", callback_data="video_720"),
+         InlineKeyboardButton("MP4 1080p", callback_data="video_1080")]
+    ]
+    await update.message.reply_text("Choose compression quality:", reply_markup=InlineKeyboardMarkup(options))
+
+# Compression handler
+async def compress_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    choice = query.data
+    files = context.user_data.get("input_files", [])
+    out_files = []
+
+    for path in files:
+        base = os.path.basename(path)
+        out_path = os.path.join(COMPRESS_DIR, base)
+
+        if choice.startswith("audio"):
+            bitrate = choice.split("_")[1]
+            out_path = out_path.rsplit(".", 1)[0] + ".mp3"
+            compress_audio(path, out_path, bitrate)
+        elif choice.startswith("video"):
+            res = choice.split("_")[1]
+            out_path = out_path.rsplit(".", 1)[0] + ".mp4"
+            compress_video(path, out_path, res)
+
+        out_files.append(out_path)
+
+    if len(out_files) == 1:
+        await query.message.reply_document(InputFile(out_files[0]))
     else:
-        os.system(f"ffmpeg -i '{input_path}' -vcodec libx264 -crf 28 -preset veryfast -acodec aac -b:a 64k -y '{output_path}'")
+        zip_path = os.path.join(COMPRESS_DIR, "compressed_output.zip")
+        with zipfile.ZipFile(zip_path, 'w') as zipf:
+            for f in out_files:
+                zipf.write(f, arcname=os.path.basename(f))
+        await query.message.reply_document(InputFile(zip_path))
 
-    cfg = load_config()
-    via = cfg.get("via", "@YourBot")
+    clean_dirs()
 
-    if output_path.endswith(".mp3"):
-        await message.reply_audio(audio=InputFile(output_path), filename=os.path.basename(output_path), caption=f"via {via}")
-    else:
-        await message.reply_video(video=InputFile(output_path), filename=os.path.basename(output_path), caption=f"via {via}")
-
-    os.remove(input_path)
-    os.remove(output_path)
-
-if __name__ == "__main__":
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("setchannels", set_channels))
-    app.add_handler(CommandHandler("setvia", set_via))
-    app.add_handler(CommandHandler("setstart", set_start))
-    app.add_handler(CommandHandler("setstartimage", set_start_image))
-    app.add_handler(MessageHandler(filters.AUDIO | filters.VIDEO | filters.Document.ALL, handle_media))
-
-    print("Bot is running...")
-    app.run_polling()
-        
+# Initialize bot
+app = Application.builder().token(BOT_TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("setstart", set_start))
+app.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex("^/setstartimage"), set_start_image))
+app.add_handler(MessageHandler(filters.Document.ALL | filters.AUDIO | filters.VIDEO, handle_file))
+app.add_handler(MessageHandler(filters.ATTACHMENT, handle_file))
+app.add_handler(MessageHandler(filters.TEXT, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.add_handler(MessageHandler(filters.ALL, handle_file))
+app.run_polling()
