@@ -1,7 +1,7 @@
 import os
 import json
 import shutil
-import zipfile
+import mimetypes
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -12,16 +12,14 @@ BOT_OWNER_ID = int(os.getenv("BOT_OWNER_ID", "0"))
 
 CONFIG_FILE = "config.json"
 DOWNLOAD_DIR = "downloads"
-COMPRESS_DIR = "compressed"
+COMPRESSED_DIR = "compressed"
+
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+os.makedirs(COMPRESSED_DIR, exist_ok=True)
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        save_config({
-            "channels": [],
-            "via": "@YourBot",
-            "start_message": "Welcome! Send me a file or ZIP to compress.",
-            "start_image_url": ""
-        })
+        save_config({"channels": [], "via": "@YourBot", "start_message": "Welcome! Send me a file to compress.", "start_image_url": ""})
     with open(CONFIG_FILE, "r") as f:
         return json.load(f)
 
@@ -99,96 +97,64 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
         except:
             not_joined.append(channel.strip())
     if not_joined:
-        buttons = [[InlineKeyboardButton(f"Join {ch}", url=f"https://t.me/{ch.lstrip('@')}")] for ch in not_joined]
-        await update.message.reply_text("Please join all required channels to continue:", reply_markup=InlineKeyboardMarkup(buttons))
+        buttons = [[InlineKeyboardButton(f"Join {ch}", url=f"https://t.me/{ch.lstrip('@')}")]
+                   for ch in not_joined]
+        await update.message.reply_text("Please join all the required channels to continue:",
+                                        reply_markup=InlineKeyboardMarkup(buttons))
         return False
     return True
-
-def compress_audio(input_path, output_path, bitrate="128k"):
-    os.system(f"ffmpeg -i '{input_path}' -b:a {bitrate} -y '{output_path}'")
-
-def compress_video(input_path, output_path, resolution="480"):
-    scale = {
-        "360": "640:360",
-        "480": "854:480",
-        "720": "1280:720",
-        "1080": "1920:1080"
-    }.get(resolution, "854:480")
-    os.system(f"ffmpeg -i '{input_path}' -vf scale={scale} -crf 28 -preset veryfast -acodec aac -b:a 128k -y '{output_path}'")
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_join(update, context):
         return
 
     message = update.message
-    media = message.document or message.video or message.audio
+    media = message.audio or message.video or message.document
     if not media:
-        await message.reply_text("Send an audio/video/document/zip file.")
+        await message.reply_text("Please send an audio, video, or document file.")
         return
 
     file = await media.get_file()
-    filename = media.file_name or f"{media.file_unique_id}"
-    mime = media.mime_type or "application/octet-stream"
-    ext = os.path.splitext(filename)[-1]
-    uid = media.file_unique_id
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    os.makedirs(COMPRESS_DIR, exist_ok=True)
+    original_name = media.file_name or "input"
+    input_ext = os.path.splitext(original_name)[1] or mimetypes.guess_extension(media.mime_type or "") or ".bin"
+    base_name = os.path.splitext(original_name)[0]
 
-    input_path = os.path.join(DOWNLOAD_DIR, f"{uid}{ext}")
+    input_path = os.path.join(DOWNLOAD_DIR, f"{base_name}{input_ext}")
+    output_path = os.path.join(COMPRESSED_DIR, f"{base_name}_compressed")
+
+    if "audio" in (media.mime_type or ""):
+        output_path += ".mp3"
+    else:
+        output_path += ".mp4"
+
     await file.download_to_drive(custom_path=input_path)
+
+    if "audio" in (media.mime_type or ""):
+        os.system(f"ffmpeg -i '{input_path}' -b:a 64k -metadata title='{base_name}' -y '{output_path}'")
+    else:
+        os.system(f"ffmpeg -i '{input_path}' -vcodec libx264 -crf 28 -preset veryfast -acodec aac -b:a 64k -y '{output_path}'")
 
     cfg = load_config()
     via = cfg.get("via", "@YourBot")
 
-    if ext == ".zip":
-        extract_folder = os.path.join(DOWNLOAD_DIR, uid)
-        os.makedirs(extract_folder, exist_ok=True)
-        with zipfile.ZipFile(input_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_folder)
-        compressed_files = []
-        for root, _, files in os.walk(extract_folder):
-            for f in files:
-                full_path = os.path.join(root, f)
-                name, extension = os.path.splitext(f)
-                compressed_path = os.path.join(COMPRESS_DIR, f"compressed_{name}{extension}")
-                if extension.lower() in [".mp3", ".wav", ".aac"]:
-                    compress_audio(full_path, compressed_path, "128k")
-                elif extension.lower() in [".mp4", ".mkv", ".mov"]:
-                    compress_video(full_path, compressed_path, "480")
-                compressed_files.append(compressed_path)
-        zip_output = os.path.join(COMPRESS_DIR, f"compressed_{uid}.zip")
-        with zipfile.ZipFile(zip_output, 'w') as zipf:
-            for file in compressed_files:
-                zipf.write(file, arcname=os.path.basename(file))
-        await message.reply_document(InputFile(zip_output), caption=f"via {via}")
-        shutil.rmtree(extract_folder)
-        os.remove(zip_output)
-
-    elif "audio" in mime:
-        out = os.path.join(COMPRESS_DIR, f"{uid}.mp3")
-        compress_audio(input_path, out, "128k")
-        await message.reply_audio(InputFile(out), caption=f"via {via}")
-        os.remove(out)
-
-    elif "video" in mime:
-        out = os.path.join(COMPRESS_DIR, f"{uid}.mp4")
-        compress_video(input_path, out, "480")
-        await message.reply_video(InputFile(out), caption=f"via {via}")
-        os.remove(out)
-
+    if output_path.endswith(".mp3"):
+        await message.reply_audio(audio=InputFile(output_path), filename=os.path.basename(output_path), caption=f"via {via}")
     else:
-        await message.reply_text("Unsupported file type.")
+        await message.reply_video(video=InputFile(output_path), filename=os.path.basename(output_path), caption=f"via {via}")
 
     os.remove(input_path)
+    os.remove(output_path)
 
 if __name__ == "__main__":
     app = Application.builder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("setstart", set_start))
-    app.add_handler(CommandHandler("setstartimage", set_start_image))
     app.add_handler(CommandHandler("setchannels", set_channels))
     app.add_handler(CommandHandler("setvia", set_via))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_media))
+    app.add_handler(CommandHandler("setstart", set_start))
+    app.add_handler(CommandHandler("setstartimage", set_start_image))
+    app.add_handler(MessageHandler(filters.AUDIO | filters.VIDEO | filters.Document.ALL, handle_media))
 
     print("Bot is running...")
     app.run_polling()
+        
