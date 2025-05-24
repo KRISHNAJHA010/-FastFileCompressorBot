@@ -3,7 +3,7 @@ import zipfile
 import shutil
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 # Load environment variables
 load_dotenv()
@@ -26,14 +26,14 @@ def clean_dirs():
     os.makedirs(COMPRESS_DIR, exist_ok=True)
 
 def compress_audio(input_path, output_path, bitrate="128k"):
-    os.system(f"ffmpeg -i \"{input_path}\" -b:a {bitrate} -y \"{output_path}\"")
+    os.system(f'ffmpeg -i "{input_path}" -c:a libmp3lame -b:a {bitrate} -y "{output_path}"')
 
 def compress_video(input_path, output_path, resolution="480"):
     scale = {
         "360": "640:360", "480": "854:480",
         "720": "1280:720", "1080": "1920:1080"
     }[resolution]
-    os.system(f"ffmpeg -i \"{input_path}\" -vf scale={scale} -preset veryfast -crf 28 -c:a aac -b:a 64k -y \"{output_path}\"")
+    os.system(f'ffmpeg -i "{input_path}" -vf "scale={scale}" -preset veryfast -crf 28 -c:v libx264 -c:a aac -b:a 64k -y "{output_path}"')
 
 def load_start_text():
     if os.path.exists(START_TEXT_FILE):
@@ -96,6 +96,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if f.lower().endswith((".mp3", ".mp4")):
                 context.user_data["input_files"].append(path)
 
+    if not context.user_data["input_files"]:
+        await update.message.reply_text("No MP3 or MP4 files found.")
+        return
+
     options = [
         [InlineKeyboardButton("MP3 128kbps", callback_data="audio_128k"),
          InlineKeyboardButton("MP3 64kbps", callback_data="audio_64k")],
@@ -131,111 +135,29 @@ async def compress_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         out_files.append(out_path)
 
     if len(out_files) == 1:
-        await query.message.reply_document(InputFile(out_files[0]))
+        await query.message.reply_document(InputFile(out_files[0]), caption="Compressed by @YourBotUsername")
     else:
         zip_path = os.path.join(COMPRESS_DIR, "compressed_output.zip")
         with zipfile.ZipFile(zip_path, 'w') as zipf:
             for f in out_files:
                 zipf.write(f, arcname=os.path.basename(f))
-        await query.message.reply_document(InputFile(zip_path))
+        await query.message.reply_document(InputFile(zip_path), caption="Compressed by @YourBotUsername")
 
     clean_dirs()
 
 # Initialize bot
 app = Application.builder().token(BOT_TOKEN).build()
+
+# Command handlers
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("setstart", set_start))
 app.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex("^/setstartimage"), set_start_image))
+
+# File upload handler
 app.add_handler(MessageHandler(filters.Document.ALL | filters.AUDIO | filters.VIDEO, handle_file))
-app.add_handler(MessageHandler(filters.ATTACHMENT, handle_file))
-app.add_handler(MessageHandler(filters.TEXT, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
-app.add_handler(MessageHandler(filters.ALL, handle_file))
+
+# Callback handler for buttons
+app.add_handler(CallbackQueryHandler(compress_choice))
+
+# Start polling
 app.run_polling()
