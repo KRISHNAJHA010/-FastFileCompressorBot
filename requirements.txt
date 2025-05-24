@@ -1,2 +1,9 @@
-python-telegram-bot==20.7
-python-dotenv==1.0.1
+
+python-telegram-bot==20.6
+moviepy
+pydub
+ffmpeg-python
+aiofiles
+aiohttp
+mutagen
+Pillow
