@@ -1,4 +1,6 @@
 {
   "channels": [],
-  "via": "@YourBot"
+  "via": "@YourBot",
+  "start_message": "Welcome to my bot!",
+  "start_image_url": ""
 }
