@@ -9,10 +9,9 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))
-BOT_USERNAME = os.getenv("BOT_USERNAME", "YourBotUsername")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "YourChannel")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = 123456789  # Replace with your Telegram ID
+BOT_USERNAME = "YourBotUsername"
+CHANNEL_USERNAME = "YourChannel"
 
 START_TEXT = "Send a ZIP or folder containing MP3 or MP4 files."
 START_IMG_PATH = "start.jpg"
@@ -105,7 +104,7 @@ async def compress_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shutil.rmtree(path)
     shutil.rmtree(out_dir)
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
+app = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("setstart", set_start))
